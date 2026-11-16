@@ -22,11 +22,14 @@
   const dayLabel = x => fmtShort(L.fmt(new Date(x * 86400000)));
 
   /* ---------- state + storage ---------- */
-  const blank = () => ({ v: 1, startDate: '', days: {}, weights: {}, measures: [], sessions: [], lastBackup: 0, reminderIds: null });
+  const blank = () => ({ v: 1, startDate: '', days: {}, weights: {}, skips: {}, measures: [], sessions: [], lastBackup: 0, reminderIds: null });
   function normalize(o) {
     const b = blank();
     if (!o || typeof o !== 'object') return b;
     ['days', 'weights'].forEach(k => { if (o[k] && typeof o[k] === 'object' && !Array.isArray(o[k])) b[k] = o[k]; });
+    if (o.skips && typeof o.skips === 'object' && !Array.isArray(o.skips)) {
+      Object.keys(o.skips).forEach(d => { if (/^\d{4}-\d{2}-\d{2}$/.test(d) && o.skips[d] && typeof o.skips[d] === 'object') b.skips[d] = { why: String(o.skips[d].why || '').slice(0, 40) }; });
+    }
     if (Array.isArray(o.measures)) b.measures = o.measures.filter(m => m && typeof m.d === 'string');
     if (Array.isArray(o.sessions)) {
       b.sessions = o.sessions.filter(s => s && typeof s.d === 'string' && (s.day === 'B' || (s.day >= 1 && s.day <= 5))).map(s => { s.sets = s.sets && typeof s.sets === 'object' ? s.sets : {}; s.id = s.id || s.d + '-' + s.day; return s; });
@@ -58,7 +61,7 @@
     return s;
   }
 
-  const ui = { tab: 'today', date: nowStr(), liftDay: null, openMeal: null, timer: null, weightTable: false, liftKey: null, sheet: null };
+  const ui = { tab: 'today', date: nowStr(), missWeek: 0, liftDay: null, openMeal: null, timer: null, weightTable: false, liftKey: null, sheet: null };
 
   /* ---------- small helpers ---------- */
   const plate = (color, text, size) => '<span class="plate" data-c="' + color + '"' + (size ? ' style="--s:' + size + 'px"' : '') + ' aria-hidden="true">' + text + '</span>';
@@ -159,6 +162,42 @@
     openSheet('<h3>Water</h3><p class="bignum" style="margin-top:10px" id="wtot">' + (ml / 1000).toFixed(2).replace(/0$/, '') + '<small>L of 2.5–3 L</small></p>' +
       '<div class="quick"><button class="pill" data-act="water" data-ml="250">+250 mL</button><button class="pill" data-act="water" data-ml="500">+500 mL</button><button class="pill" data-act="water" data-ml="750">+750 mL</button><button class="pill" data-act="water" data-ml="-250">−250 mL</button></div>' +
       '<div class="actions" style="grid-template-columns:1fr"><button class="btn" data-act="sheet-close">Done</button></div>');
+  }
+
+  /* ---------- moving times ---------- */
+  const planRowsFor = date => L.routineFor(L.dayType(state, date), L.weekday(date));
+  const clockNow = () => { const d = new Date(); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+  function timeSheet(rowId) {
+    const rows = L.withTimes(planRowsFor(ui.date), peek(ui.date).times), row = rows.filter(x => x.id === rowId)[0];
+    if (!row) return;
+    const chain = L.GYM_CHAIN.indexOf(rowId) >= 0 && rowId === 'gym';
+    openSheet('<h3>' + esc(row.text.replace(' (1 option)', '')) + '</h3>' +
+      '<p class="small muted" style="margin-top:6px">This day only. ' + (chain ? 'The trips and the whey move with the gym. Breakfast and shower stay.' : 'Nothing else moves.') + '</p>' +
+      '<div class="field"><label for="tm">Starts at</label><input type="time" id="tm" value="' + row.at + '"></div>' +
+      '<div class="actions"><button class="btn quiet" data-act="sheet-close">Cancel</button><button class="btn" data-act="time-save" data-row="' + rowId + '">Save</button></div>' +
+      (row.moved ? '<button class="btn quiet block" style="margin-top:10px" data-act="time-reset" data-row="' + rowId + '">Back to the plan time (' + esc(L.rangeText(L.toMin(row.planAt), L.spanMin({ at: row.planAt, time: planRowsFor(ui.date).filter(x => x.id === rowId)[0].time }))) + ')</button>' : ''));
+  }
+  function wakeSheet() {
+    const plan = planRowsFor(ui.date), eff = L.withTimes(plan, peek(ui.date).times);
+    const w = eff.filter(x => x.id === 'wake')[0], g = eff.filter(x => x.id === 'gym')[0];
+    if (!w) return;
+    const gap = g ? L.toMin(g.planAt) - L.toMin(w.planAt) : 45;
+    const startW = ui.date === nowStr() && clockNow() > w.at ? clockNow().slice(0, 4) + '0' : w.at;
+    const startG = g ? L.toHHMM(L.toMin(startW) + gap) : '';
+    openSheet('<h3>Woke later?</h3><p class="small muted" style="margin-top:6px">This day only. The gym keeps the gap your plan has after waking. Change it, or clear it to leave the gym alone. Trips and whey follow the gym. Breakfast and shower stay.</p>' +
+      '<div class="field"><label for="wk">I woke at</label><input type="time" id="wk" value="' + startW + '"></div>' +
+      (g ? '<div class="field"><label for="gy">Gym at</label><input type="time" id="gy" value="' + startG + '"></div>' : '') +
+      '<div class="actions"><button class="btn quiet" data-act="sheet-close">Cancel</button><button class="btn" data-act="wake-save">Move</button></div>');
+  }
+
+  /* ---------- missed day ---------- */
+  const WHY = ['Woke late', 'Work', 'Tired', 'Shoulder sore', 'Sick or away', 'Other'];
+  function skipSheet() {
+    const cur = (state.skips[ui.date] || {}).why;
+    openSheet('<h3>' + (ui.date === nowStr() ? 'Skip today?' : 'Missed ' + fmtLong(ui.date)) + '</h3>' +
+      '<p class="small muted" style="margin-top:6px">Pick a reason. The next lift stays the next day in order. Never double up.</p>' +
+      '<div class="quick">' + WHY.map(w => '<button class="pill" data-act="skip-why" data-why="' + esc(w) + '" aria-pressed="' + (w === cur) + '">' + esc(w) + '</button>').join('') + '</div>' +
+      '<div class="actions" style="grid-template-columns:1fr"><button class="btn quiet" data-act="sheet-close">Cancel</button></div>');
   }
 
   /* ---------- weight, steps, sleep ---------- */
@@ -269,6 +308,16 @@
     h += '<div class="hero">' + hero.plate + '<div><h2>' + esc(hero.title) + '</h2><p>' + esc(hero.sub) + '</p></div></div>';
     if (openDay !== null) h += '<button class="btn block" style="margin-top:10px" data-act="open-lift" data-day="' + openDay + '">' + esc(openLabel) + '</button>';
     h += alt;
+    if (hasPlan() && wd >= 1 && wd <= 5 && tw.kind === 'train' && !tw.done && !tw.started) {
+      const ds = L.dayStatus(state.sessions, state.skips, date, nowStr(), sd());
+      if (ds.status === 'missed') {
+        h += '<div class="banner"><span><b>Missed</b>' + (ds.why ? ': ' + esc(ds.why) : ' · no reason logged') + '. Day ' + tw.day + ' stays next in order.</span>' +
+          '<span class="inline-actions" style="margin:0;flex-wrap:nowrap"><button class="btn small quiet" data-act="skip-sheet">' + (ds.why ? 'Change' : 'Add reason') + '</button>' +
+          (ds.skipped ? '<button class="btn small quiet" data-act="skip-undo">Undo</button>' : '') + '</span></div>';
+      } else if (ds.status === 'today') {
+        h += '<button class="btn quiet block" style="margin-top:8px" data-act="skip-sheet">Skip today</button>';
+      }
+    }
 
     h += '<div class="inline-actions" style="margin-top:14px"><span class="small muted">Food and routine for</span><span class="seg" role="group" aria-label="Day type">' +
       '<button data-act="daytype" data-type="train" aria-pressed="' + (type === 'train') + '">Training day</button>' +
@@ -291,15 +340,16 @@
       '<p class="small muted" style="margin-top:10px">Figures are about ±15%. Skipped a meal? Make up the protein, not the calories.</p></div></div>';
 
     /* schedule */
-    const rows = L.routineFor(type, wd);
+    const planRows = L.routineFor(type, wd), rows = L.withTimes(planRows, r.times);
+    const moved = Object.keys(r.times || {}).length > 0;
     const d2 = new Date(), hhmm = String(d2.getHours()).padStart(2, '0') + ':' + String(d2.getMinutes()).padStart(2, '0');
     const nowId = isToday ? L.currentRowId(rows, hhmm) : null;
-    h += '<div class="panel"><div class="head"><h3>Schedule</h3><span class="small muted">' + (type === 'train' ? 'Training day' : 'Rest day') + '</span></div><ul class="tl">';
+    h += '<div class="panel"><div class="head"><h3>Schedule</h3><span class="small muted">' + (moved ? '<button class="link" data-act="times-reset">Reset times</button> · ' : '') + (type === 'train' ? 'Training day' : 'Rest day') + '</span></div><ul class="tl">';
     rows.forEach(row => {
       const done = L.rowDone(row, r, type, tw.done);
       let extra = '', optsHtml = '', act = row.kind === 'gym' ? 'gym-tick' : 'row-done', label = row.text;
       if (row.kind === 'wake') {
-        extra = '<div class="inline-actions"><button class="pill" data-act="weight-sheet">' + (wt != null ? 'Weight ' + kgText(wt) + ' kg' : 'Log weight') + '</button></div>';
+        extra = '<div class="inline-actions"><button class="pill" data-act="weight-sheet">' + (wt != null ? 'Weight ' + kgText(wt) + ' kg' : 'Log weight') + '</button><button class="pill" data-act="wake-sheet">Woke later?</button></div>';
       } else if (row.kind === 'gym' && !(type === 'rest' && wd === 0)) {
         const target = tw.kind === 'train' ? tw.day : tw.kind === 'bonus' ? 'B' : null;
         if (target !== null) extra = '<div class="inline-actions"><button class="pill" data-act="open-lift" data-day="' + target + '">' + (tw.kind === 'bonus' ? 'Open bonus' : 'Open workout') + '</button></div>';
@@ -320,7 +370,7 @@
       } else if (row.kind === 'extra') act = 'extra-tick';
       else if (row.kind === 'whey-post') act = 'whey-tick';
       const text = row.kind === 'meal' || row.kind === 'extra' ? row.text.replace(' (1 option)', '') : row.text;
-      h += '<li data-row="' + row.id + '" class="' + (row.id === nowId ? 'now ' : '') + (done ? 'done' : '') + '"><div class="time">' + esc(row.time) + '</div><div><div class="what">' + esc(text) + (row.id === nowId ? '<span class="nowtag">Now</span>' : '') + '</div>' +
+      h += '<li data-row="' + row.id + '" class="' + (row.id === nowId ? 'now ' : '') + (done ? 'done' : '') + '"><div class="time"><button class="tbtn' + (row.moved ? ' moved' : '') + '" data-act="time-sheet" data-row="' + row.id + '" aria-label="Change the time of ' + esc(text) + '">' + esc(row.time) + '</button>' + (row.moved ? '<small class="mv">moved</small>' : '') + '</div><div><div class="what">' + esc(text) + (row.id === nowId ? '<span class="nowtag">Now</span>' : '') + '</div>' +
         (row.note ? '<div class="note">' + esc(row.note) + '</div>' : '') + extra + '</div>' +
         tick(act, 'data-row="' + row.id + '"', done, label) + (optsHtml ? '<div class="optwrap">' + optsHtml + '</div>' : '') + '</li>';
     });
@@ -472,6 +522,37 @@
     }
     h += '</div>';
 
+    /* missed days: one Monday-to-Sunday week at a time */
+    if (hasPlan() && today >= sd()) {
+      const startMon = L.mondayOf(sd()), curMon = L.mondayOf(today);
+      const back = Math.round(L.diffDays(startMon, curMon) / 7);
+      ui.missWeek = Math.max(-back, Math.min(0, ui.missWeek));
+      const wk = L.weekView(state.sessions, state.skips, L.addDays(curMon, ui.missWeek * 7), today, sd());
+      const wkNo = Math.round(L.diffDays(startMon, wk.start) / 7) + 1;
+      const label = p => p === 0 ? 'Off' : p === 'B' ? 'Bonus (optional)' : 'Day ' + p + ' · ' + L.dayDef(p).name;
+      const pillText = { done: 'Done', short: 'Short', bonus: 'Bonus', missed: 'Missed', rest: 'Rest', today: 'Today', upcoming: '', before: '' };
+      let line, bad = false;
+      if (wk.left === 0) line = 'Five lifts done. Anything more is a bonus.';
+      else if (wk.over) { line = 'Ended ' + wk.left + ' short of 5.'; bad = true; }
+      else if (wk.reachable) line = 'Still reachable: ' + wk.left + ' more in ' + wk.open + ' open day' + (wk.open === 1 ? '' : 's') + '.';
+      else { line = '5 is out of reach this week. Best is ' + (wk.lifts + wk.open) + '. Do not double up to catch up.'; bad = true; }
+      h += '<div class="panel"><div class="head"><h3>Missed days</h3><span class="small muted">Week ' + wkNo + ' · ' + fmtShort(wk.start) + '–' + fmtShort(wk.end) + '</span></div>' +
+        '<div class="pad" style="padding-bottom:8px"><div class="bignum" style="font-size:28px">' + wk.lifts + ' of 5<small>lifts' + (wk.missed ? ' · ' + wk.missed + ' missed' : '') + '</small></div>' +
+        '<p class="status' + (bad ? ' bad' : '') + '">' + esc(line) + '</p></div>';
+      wk.days.forEach(x => {
+        let sub = '';
+        if (x.lifted && x.lifted !== 'B' && x.lifted !== x.plan) sub = 'Did Day ' + x.lifted + ' · ' + L.dayDef(x.lifted).name;
+        if (x.status === 'short') sub += (sub ? ' · ' : '') + x.sets + ' of ' + x.total + ' sets';
+        if (x.status === 'missed') sub = x.why || 'No reason logged';
+        h += '<div class="wkrow ' + x.status + '"><span class="wd">' + DOW[L.weekday(x.d)] + ' ' + L.parse(x.d).getDate() + '</span>' +
+          '<span class="pl">' + esc(label(x.plan)) + (sub ? '<small>' + esc(sub) + '</small>' : '') + '</span>' +
+          '<span class="st">' + pillText[x.status] + '</span></div>';
+      });
+      h += '<div class="inline-actions" style="padding:10px 16px 0;justify-content:space-between"><button class="pill" data-act="miss-week" data-step="-1"' + (ui.missWeek <= -back ? ' disabled style="opacity:.35"' : '') + '>‹ Earlier</button>' +
+        '<button class="pill" data-act="miss-week" data-step="1"' + (ui.missWeek >= 0 ? ' disabled style="opacity:.35"' : '') + '>Later ›</button></div>' +
+        '<p class="small muted" style="padding:10px 16px 12px">Missed a day? Do the next day in order, never double up. Eat to plan either way.</p></div>';
+    }
+
     /* consistency */
     const wd = L.weekday(today), monday = L.addDays(today, -((wd + 6) % 7)), start = L.addDays(monday, -21);
     const byDate = {};
@@ -483,9 +564,9 @@
     for (let i = 0; i < 28; i++) {
       const d = L.addDays(start, i), s = byDate[d], dom = L.parse(d).getDate();
       if (s) h += plate(L.dayDef(s.day).plate, s.day);
-      else h += '<span class="none' + (d === today ? ' today' : '') + (d > today ? ' future' : '') + '">' + dom + '</span>';
+      else h += '<span class="none' + (d === today ? ' today' : '') + (d > today ? ' future' : '') + (hasPlan() && L.dayStatus(state.sessions, state.skips, d, today, sd()).status === 'missed' ? ' missed' : '') + '">' + dom + '</span>';
     }
-    h += '</div><p class="small muted" style="padding:0 16px 12px">Each disc is a finished lift, in that day\'s plate colour.</p></div>';
+    h += '</div><p class="small muted" style="padding:0 16px 12px">Each disc is a finished lift, in that day\'s plate colour. An orange ring is a missed day.</p></div>';
 
     /* lifts */
     const loads = []; const seen = {};
@@ -731,6 +812,34 @@
       case 'lift-reopen': { const s = findSession(ui.date, currentLiftDay()); if (s) { delete s.end; save(); render(); } break; }
       case 'timer-add': if (ui.timer) { ui.timer.end = Math.max(Date.now(), ui.timer.end) + 15000; if (ui.timer.fired) { ui.timer.fired = false; } drawTimer(true); } break;
       case 'timer-skip': stopTimer(); break;
+      case 'time-sheet': timeSheet(t.dataset.row); break;
+      case 'time-save': {
+        const v = ($('#tm') || {}).value;
+        if (!/^\d{2}:\d{2}$/.test(v || '')) { toast('Pick a time'); break; }
+        const plan = planRowsFor(ui.date), cur = peek(ui.date).times || {}, id = t.dataset.row;
+        const next = id === 'gym' ? L.moveGym(plan, cur, v) : L.cleanTimes(plan, Object.assign({}, cur, { [id]: v }));
+        r().times = next; if (!Object.keys(next).length) delete r().times;
+        save(); closeSheet(); render(); break;
+      }
+      case 'time-reset': {
+        const x = r(), id = t.dataset.row, tm = Object.assign({}, x.times || {});
+        if (id === 'gym') L.GYM_CHAIN.forEach(k => { delete tm[k]; }); else delete tm[id];
+        if (Object.keys(tm).length) x.times = tm; else delete x.times;
+        save(); closeSheet(); render(); break;
+      }
+      case 'times-reset': { delete r().times; save(); toast('Back to the plan times'); render(); break; }
+      case 'wake-sheet': wakeSheet(); break;
+      case 'wake-save': {
+        const wv = ($('#wk') || {}).value, gv = ($('#gy') || {}).value || '';
+        if (!/^\d{2}:\d{2}$/.test(wv || '') || (gv && !/^\d{2}:\d{2}$/.test(gv))) { toast('Pick a time'); break; }
+        const next = L.setWake(planRowsFor(ui.date), peek(ui.date).times || {}, wv, gv);
+        if (Object.keys(next).length) r().times = next; else delete r().times;
+        save(); closeSheet(); toast('Times moved for this day'); render(); break;
+      }
+      case 'skip-sheet': skipSheet(); break;
+      case 'skip-why': { state.skips[ui.date] = { why: String(t.dataset.why).slice(0, 40) }; save(); closeSheet(); toast('Marked missed'); render(); break; }
+      case 'skip-undo': { delete state.skips[ui.date]; save(); toast('Skip removed'); render(); break; }
+      case 'miss-week': ui.missWeek += +t.dataset.step; render(); break;
       case 'water-sheet': waterSheet(); break;
       case 'water': { const v = Math.max(0, (peek(ui.date).water || 0) + (+t.dataset.ml)); r().water = v; save(); const w = $('#wtot'); if (w) w.innerHTML = (v / 1000).toFixed(2).replace(/0$/, '') + '<small>L of 2.5–3 L</small>'; render(); break; }
       case 'steps-sheet': stepsSheet(); break;

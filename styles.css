@@ -260,7 +260,7 @@ details.acc .body { padding: 0 16px 14px; }
 .rule .area { grid-column: 1 / -1; font: 700 15px/1.2 var(--serif); padding-top: 8px; border-top: 0; }
 .field { display: grid; gap: 6px; margin-top: 12px; }
 .field label { font-size: 14px; color: var(--ink2); }
-.field input[type="text"], .field input[type="date"], .sheet input[type="text"] {
+.field input[type="text"], .field input[type="date"], .field input[type="time"], .sheet input[type="text"] {
   width: 100%; height: 48px; border: 0; border-radius: 10px; background: var(--soft); padding: 0 12px; font-size: 18px;
   box-shadow: inset 0 0 0 1px var(--line);
 }
@@ -309,3 +309,22 @@ details.acc .body { padding: 0 16px 14px; }
 body.has-timer #toast { bottom: calc(var(--tabs-h) + env(safe-area-inset-bottom) + 84px); }
 
 @media (prefers-reduced-motion: reduce) { .sheet { animation: none; } }
+
+/* missed days */
+.wkrow { display: grid; grid-template-columns: 52px 1fr auto; gap: 8px; align-items: baseline; padding: 9px 16px; border-top: 1px solid var(--line); font-size: 14px; }
+.wkrow .wd { color: var(--ink2); font-variant-numeric: tabular-nums; }
+.wkrow .pl small { display: block; margin-top: 1px; font-size: 12.5px; color: var(--muted); }
+.wkrow .st { min-width: 56px; text-align: center; font-size: 12.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; color: var(--ink2); box-shadow: inset 0 0 0 1.5px var(--line); }
+.wkrow .st:empty { box-shadow: none; }
+.wkrow.done .st { color: var(--green); box-shadow: inset 0 0 0 1.5px var(--green); }
+.wkrow.short .st { color: var(--green); box-shadow: none; border: 1.5px dashed var(--green); padding: 0 8px; }
+.wkrow.missed .st { color: var(--warn); box-shadow: inset 0 0 0 1.5px var(--warn); }
+.wkrow.missed .pl small { color: var(--warn); }
+.wkrow.today .wd, .wkrow.today .pl { font-weight: 700; color: var(--ink); }
+.wkrow.upcoming, .wkrow.before, .wkrow.rest { opacity: .6; }
+.grid28 .none.missed { box-shadow: inset 0 0 0 2px var(--warn); color: var(--warn); font-weight: 700; }
+
+/* moved times */
+.tl .time .tbtn { display: block; width: 100%; min-height: 32px; padding: 0; text-align: left; font: inherit; color: inherit; line-height: 1.25; text-decoration: underline dotted; text-decoration-color: var(--line); text-underline-offset: 4px; }
+.tl .time .tbtn.moved { color: var(--ink); font-weight: 600; text-decoration-color: var(--ink2); }
+.tl .time .mv { display: block; font-size: 11px; color: var(--warn); font-weight: 600; margin-top: 1px; }

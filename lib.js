@@ -233,7 +233,105 @@
     return nowMs - state.lastBackup > 7 * 86400000;
   }
 
+  /* ---------- moving a day's times ---------- */
+  /* A late start moves rows for that day only. Gym trips and whey follow the gym; everything else stays. */
+  var GYM_CHAIN = ['travel-out', 'gym', 'whey-post', 'travel-home'];
+  function toMin(hhmm) { return +hhmm.slice(0, 2) * 60 + +hhmm.slice(3, 5); }
+  function toHHMM(m) { m = Math.max(0, Math.min(1439, m)); return pad(Math.floor(m / 60)) + ':' + pad(m % 60); }
+  /* Length in minutes of a plan range like "7:15–8:30 AM". 0 for a single time. */
+  function spanMin(row) {
+    var m = /[–-]\s*(\d{1,2}):(\d{2})\s*(AM|PM)/.exec(row.time || '');
+    if (!m) return 0;
+    var end = ((+m[1] % 12) + (m[3] === 'PM' ? 12 : 0)) * 60 + +m[2], d = end - toMin(row.at);
+    return d > 0 && d <= 360 ? d : 0;
+  }
+  function clock12(min) { var h = Math.floor(min / 60) % 24; return { t: (h % 12 || 12) + ':' + pad(min % 60), ap: h < 12 ? 'AM' : 'PM' }; }
+  function rangeText(startMin, span) {
+    var a = clock12(startMin);
+    if (!span) return a.t + ' ' + a.ap;
+    var b = clock12(startMin + span);
+    return a.ap === b.ap ? a.t + '–' + b.t + ' ' + b.ap : a.t + ' ' + a.ap + '–' + b.t + ' ' + b.ap;
+  }
+  /* The day's rows with its moved times applied, in time order. Ties keep the plan's order. */
+  function withTimes(rows, times) {
+    times = times || {};
+    var out = rows.map(function (r, i) {
+      var row = {}; for (var k in r) row[k] = r[k];
+      row.planAt = r.at; row.order = i;
+      if (times[r.id] && /^\d{2}:\d{2}$/.test(times[r.id])) {
+        row.at = times[r.id]; row.time = rangeText(toMin(times[r.id]), spanMin(r)); row.moved = true;
+      }
+      return row;
+    });
+    out.sort(function (a, b) { return a.at < b.at ? -1 : (a.at > b.at ? 1 : a.order - b.order); });
+    return out;
+  }
+  function cleanTimes(rows, times) {
+    var out = {};
+    rows.forEach(function (r) { if (times[r.id] && times[r.id] !== r.at) out[r.id] = times[r.id]; });
+    return out;
+  }
+  /* Move the gym to newAt. The trips and the whey keep their gaps. */
+  function moveGym(rows, times, newAt) {
+    var cur = withTimes(rows, times), gym = cur.filter(function (r) { return r.id === 'gym'; })[0];
+    if (!gym) return times;
+    var delta = toMin(newAt) - toMin(gym.at), out = {}, k;
+    for (k in times) out[k] = times[k];
+    cur.forEach(function (r) { if (GYM_CHAIN.indexOf(r.id) >= 0) out[r.id] = toHHMM(toMin(r.at) + delta); });
+    return cleanTimes(rows, out);
+  }
+  /* "I woke at": move the wake row, and the gym if a time is given. */
+  function setWake(rows, times, wakeAt, gymAt) {
+    var out = {}, k;
+    for (k in times) out[k] = times[k];
+    if (wakeAt) out.wake = wakeAt;
+    out = cleanTimes(rows, out);
+    return gymAt ? moveGym(rows, out, gymAt) : out;
+  }
+
+  /* ---------- missed days ---------- */
+  /* Calendar plan: Mon to Fri = Day 1 to 5, Sat = bonus, Sun = off. 0 means off. */
+  function planDayFor(date) {
+    var wd = weekday(date);
+    return wd === 0 ? 0 : (wd === 6 ? 'B' : wd);
+  }
+  function mondayOf(date) { return addDays(date, -((weekday(date) + 6) % 7)); }
+  /* What happened on one date. A finished lift wins over a skip mark.
+     Statuses: done, short (finished with fewer sets than planned), bonus, missed, rest, today, upcoming, before. */
+  function dayStatus(sessions, skips, date, today, start) {
+    var plan = planDayFor(date);
+    var mine = sessions.filter(function (s) { return s.d === date && isComplete(s); });
+    var lift = mine.filter(function (s) { return s.day !== 'B'; })[0];
+    if (lift) {
+      var def = dayDef(lift.day), total = def ? totalSets(def) : 0, n = doneSetCount(lift);
+      return { status: n < total ? 'short' : 'done', plan: plan, lifted: lift.day, sets: n, total: total };
+    }
+    if (mine.length) return { status: 'bonus', plan: plan, lifted: 'B' };
+    if (start && date < start) return { status: 'before', plan: plan };
+    if (date > today) return { status: 'upcoming', plan: plan };
+    var mark = skips && skips[date];
+    if (mark) return { status: 'missed', plan: plan, skipped: true, why: mark.why || '' };
+    if (date === today) return { status: 'today', plan: plan };
+    if (typeof plan === 'number' && plan > 0) return { status: 'missed', plan: plan, skipped: false, why: '' };
+    return { status: 'rest', plan: plan };
+  }
+  /* One Monday-to-Sunday week. Reachable: could 5 lifts still fit, counting every open day (a missed lift slides to the weekend). */
+  function weekView(sessions, skips, weekStart, today, start) {
+    var days = [], lifts = 0, missed = 0, open = 0;
+    for (var i = 0; i < 7; i++) {
+      var d = addDays(weekStart, i), st = dayStatus(sessions, skips, d, today, start);
+      st.d = d; days.push(st);
+      if (st.status === 'done' || st.status === 'short') lifts++;
+      else if (st.status === 'missed') missed++;
+      else if (st.status === 'today' || st.status === 'upcoming') open++;
+    }
+    return { start: weekStart, end: addDays(weekStart, 6), days: days, lifts: lifts, missed: missed, open: open,
+      left: Math.max(0, 5 - lifts), reachable: lifts + open >= 5, over: weekStart <= today && addDays(weekStart, 6) < today };
+  }
+
   return {
+    planDayFor: planDayFor, mondayOf: mondayOf, dayStatus: dayStatus, weekView: weekView,
+    GYM_CHAIN: GYM_CHAIN, toMin: toMin, toHHMM: toHHMM, spanMin: spanMin, rangeText: rangeText, withTimes: withTimes, cleanTimes: cleanTimes, moveGym: moveGym, setWake: setWake,
     fmt: fmt, parse: parse, addDays: addDays, diffDays: diffDays, weekday: weekday, trainingWeek: trainingWeek,
     dayDef: dayDef, totalSets: totalSets, doneSetCount: doneSetCount, isComplete: isComplete, sortSessions: sortSessions,
     nextInOrder: nextInOrder, todayWorkout: todayWorkout, dayType: dayType,
