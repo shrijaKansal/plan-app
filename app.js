@@ -356,7 +356,7 @@
       } else if (row.kind === 'meal' || (row.kind === 'extra' && type === 'rest')) {
         const slot = row.meal, pick = r.meals && r.meals[slot];
         act = 'meal-tick';
-        if (pick === undefined) extra = '<div class="inline-actions"><button class="pill" data-act="meal-open" data-row="' + row.id + '">Choose 1 of 3</button></div>';
+        if (pick === undefined) extra = '<div class="inline-actions"><button class="pill" data-act="meal-open" data-row="' + row.id + '">Choose 1 of ' + PLAN.meals[slot].length + '</button></div>';
         else {
           let sum;
           if (pick === 'skip') sum = 'Skipped';

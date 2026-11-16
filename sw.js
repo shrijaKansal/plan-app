@@ -1,7 +1,7 @@
 /* Offline support. Serves files from the cache first, then refreshes them in
    the background, so the app opens instantly with no signal and picks up
    edits the next time you open it. Your logs live in the phone, not here. */
-var CACHE = 'plan-shell-v3';
+var CACHE = 'plan-shell-v4';
 var FILES = [
   './', 'index.html', 'styles.css', 'plan.js', 'lib.js', 'charts.js', 'app.js',
   'manifest.webmanifest', 'plan-loader.js',
