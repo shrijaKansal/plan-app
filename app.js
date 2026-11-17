@@ -170,10 +170,10 @@
   function timeSheet(rowId) {
     const rows = L.withTimes(planRowsFor(ui.date), peek(ui.date).times), row = rows.filter(x => x.id === rowId)[0];
     if (!row) return;
-    const chain = L.GYM_CHAIN.indexOf(rowId) >= 0 && rowId === 'gym';
+    const note = rowId === 'gym' ? 'The trips, whey and shower move with the gym. Dinner stays.' : rowId === 'wake' ? 'Wash-up and breakfast move back with it. Nothing else moves.' : 'Nothing else moves.';
     openSheet('<h3>' + esc(row.text.replace(' (1 option)', '')) + '</h3>' +
-      '<p class="small muted" style="margin-top:6px">This day only. ' + (chain ? 'The trips and the whey move with the gym. Breakfast and shower stay.' : 'Nothing else moves.') + '</p>' +
-      '<div class="field"><label for="tm">Starts at</label><input type="time" id="tm" value="' + row.at + '"></div>' +
+      '<p class="small muted" style="margin-top:6px">This day only. ' + note + '</p>' +
+      '<div class="field"><label for="tm">Starts at</label><input type="time" id="tm" value="' + L.toHHMM(L.toMin(row.at) % 1440) + '"></div>' +
       '<div class="actions"><button class="btn quiet" data-act="sheet-close">Cancel</button><button class="btn" data-act="time-save" data-row="' + rowId + '">Save</button></div>' +
       (row.moved ? '<button class="btn quiet block" style="margin-top:10px" data-act="time-reset" data-row="' + rowId + '">Back to the plan time (' + esc(L.rangeText(L.toMin(row.planAt), L.spanMin({ at: row.planAt, time: planRowsFor(ui.date).filter(x => x.id === rowId)[0].time }))) + ')</button>' : ''));
   }
@@ -181,10 +181,12 @@
     const plan = planRowsFor(ui.date), eff = L.withTimes(plan, peek(ui.date).times);
     const w = eff.filter(x => x.id === 'wake')[0], g = eff.filter(x => x.id === 'gym')[0];
     if (!w) return;
-    const gap = g ? L.toMin(g.planAt) - L.toMin(w.planAt) : 45;
     const startW = ui.date === nowStr() && clockNow() > w.at ? clockNow().slice(0, 4) + '0' : w.at;
-    const startG = g ? L.toHHMM(L.toMin(startW) + gap) : '';
-    openSheet('<h3>Woke later?</h3><p class="small muted" style="margin-top:6px">This day only. The gym keeps the gap your plan has after waking. Change it, or clear it to leave the gym alone. Trips and whey follow the gym. Breakfast and shower stay.</p>' +
+    /* A gym right after waking keeps its gap. A gym hours later (evening) stays where it is. */
+    const gap = g ? L.toMin(g.planAt) - L.toMin(w.planAt) : 0, near = gap > 0 && gap <= 180;
+    const startG = g ? (near ? L.toHHMM(L.toMin(startW) + gap) : g.at) : '';
+    openSheet('<h3>Woke later?</h3><p class="small muted" style="margin-top:6px">This day only. Wash-up and breakfast move back by the same time. ' +
+      (g ? (near ? 'The gym keeps its gap after waking. Change it, or clear it to leave the gym alone. ' : 'The gym stays where it is. Change it only if you need to. ') + 'Trips, whey and shower follow the gym. ' : '') + 'Lunch, dinner and work blocks stay.</p>' +
       '<div class="field"><label for="wk">I woke at</label><input type="time" id="wk" value="' + startW + '"></div>' +
       (g ? '<div class="field"><label for="gy">Gym at</label><input type="time" id="gy" value="' + startG + '"></div>' : '') +
       '<div class="actions"><button class="btn quiet" data-act="sheet-close">Cancel</button><button class="btn" data-act="wake-save">Move</button></div>');
@@ -343,7 +345,7 @@
     const planRows = L.routineFor(type, wd), rows = L.withTimes(planRows, r.times);
     const moved = Object.keys(r.times || {}).length > 0;
     const d2 = new Date(), hhmm = String(d2.getHours()).padStart(2, '0') + ':' + String(d2.getMinutes()).padStart(2, '0');
-    const nowId = isToday ? L.currentRowId(rows, hhmm) : null;
+    const nowId = isToday ? L.currentRowId(rows, L.clockKey(hhmm)) : null;
     h += '<div class="panel"><div class="head"><h3>Schedule</h3><span class="small muted">' + (moved ? '<button class="link" data-act="times-reset">Reset times</button> · ' : '') + (type === 'train' ? 'Training day' : 'Rest day') + '</span></div><ul class="tl">';
     rows.forEach(row => {
       const done = L.rowDone(row, r, type, tw.done);
@@ -814,16 +816,17 @@
       case 'timer-skip': stopTimer(); break;
       case 'time-sheet': timeSheet(t.dataset.row); break;
       case 'time-save': {
-        const v = ($('#tm') || {}).value;
-        if (!/^\d{2}:\d{2}$/.test(v || '')) { toast('Pick a time'); break; }
+        const raw = ($('#tm') || {}).value;
+        if (!/^\d{2}:\d{2}$/.test(raw || '')) { toast('Pick a time'); break; }
+        const v = L.clockKey(raw); /* 00:30 means 12:30 AM, the tail of the same night */
         const plan = planRowsFor(ui.date), cur = peek(ui.date).times || {}, id = t.dataset.row;
-        const next = id === 'gym' ? L.moveGym(plan, cur, v) : L.cleanTimes(plan, Object.assign({}, cur, { [id]: v }));
+        const next = id === 'gym' ? L.moveGym(plan, cur, v) : id === 'wake' ? L.setWake(plan, cur, v, '') : L.cleanTimes(plan, Object.assign({}, cur, { [id]: v }));
         r().times = next; if (!Object.keys(next).length) delete r().times;
         save(); closeSheet(); render(); break;
       }
       case 'time-reset': {
         const x = r(), id = t.dataset.row, tm = Object.assign({}, x.times || {});
-        if (id === 'gym') L.GYM_CHAIN.forEach(k => { delete tm[k]; }); else delete tm[id];
+        if (id === 'gym') L.GYM_CHAIN.forEach(k => { delete tm[k]; }); else if (id === 'wake') ['wake'].concat(L.WAKE_CHAIN).forEach(k => { delete tm[k]; }); else delete tm[id];
         if (Object.keys(tm).length) x.times = tm; else delete x.times;
         save(); closeSheet(); render(); break;
       }

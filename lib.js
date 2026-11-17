@@ -197,12 +197,15 @@
     var lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Plan app//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:Plan reminders'];
     reminderRows().forEach(function (r) {
       if (ids.indexOf(r.id) < 0) return;
-      var weekdays = r.trainOnly ? 'MO,TU,WE,TH,FR' : 'MO,TU,WE,TH,FR,SA,SU';
+      var DAYS = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'], hh = +r.at.slice(0, 2), over = hh >= 24;
+      var days = r.trainOnly ? DAYS.slice(0, 5) : DAYS;
+      if (over) days = days.map(function (d) { return DAYS[(DAYS.indexOf(d) + 1) % 7]; }); /* 12:15 AM Tuesday belongs to Monday's routine */
+      var weekdays = days.join(',');
       var count = (r.trainOnly ? 5 : 7) * weeks;
       lines.push('BEGIN:VEVENT');
       lines.push('UID:plan-' + r.id + '@plan-app');
       lines.push('DTSTAMP:' + stamp);
-      lines.push('DTSTART:' + compact(start) + 'T' + r.at.replace(':', '') + '00');
+      lines.push('DTSTART:' + compact(over ? addDays(start, 1) : start) + 'T' + pad(hh % 24) + r.at.slice(3, 5) + '00');
       lines.push('DURATION:PT15M');
       lines.push('RRULE:FREQ=WEEKLY;BYDAY=' + weekdays + ';COUNT=' + count);
       lines.push('SUMMARY:' + icsEscape(r.ics));
@@ -234,8 +237,10 @@
   }
 
   /* ---------- moving a day's times ---------- */
-  /* A late start moves rows for that day only. Gym trips and whey follow the gym; everything else stays. */
-  var GYM_CHAIN = ['travel-out', 'gym', 'whey-post', 'travel-home'];
+  /* A late start moves rows for that day only. The trips, whey and shower follow the gym; wash-up and breakfast follow waking; food and work blocks stay. */
+  var GYM_CHAIN = ['travel-out', 'gym', 'whey-post', 'travel-home', 'shower-post'];
+  /* Waking late pushes the morning rows (wash-up, breakfast) back by the same time. */
+  var WAKE_CHAIN = ['shower', 'breakfast'];
   function toMin(hhmm) { return +hhmm.slice(0, 2) * 60 + +hhmm.slice(3, 5); }
   function toHHMM(m) { m = Math.max(0, Math.min(1439, m)); return pad(Math.floor(m / 60)) + ':' + pad(m % 60); }
   /* Length in minutes of a plan range like "7:15–8:30 AM". 0 for a single time. */
@@ -280,14 +285,24 @@
     cur.forEach(function (r) { if (GYM_CHAIN.indexOf(r.id) >= 0) out[r.id] = toHHMM(toMin(r.at) + delta); });
     return cleanTimes(rows, out);
   }
-  /* "I woke at": move the wake row, and the gym if a time is given. */
+  /* "I woke at": move the wake row, push the morning rows back by the same time, and move the gym if a time is given. */
   function setWake(rows, times, wakeAt, gymAt) {
     var out = {}, k;
     for (k in times) out[k] = times[k];
-    if (wakeAt) out.wake = wakeAt;
+    if (wakeAt) {
+      out.wake = wakeAt;
+      var w = rows.filter(function (r) { return r.id === 'wake'; })[0];
+      var delta = w ? Math.max(0, toMin(wakeAt) - toMin(w.at)) : 0;
+      rows.forEach(function (r) {
+        if (WAKE_CHAIN.indexOf(r.id) < 0) return;
+        if (delta > 0) out[r.id] = toHHMM(toMin(r.at) + delta); else delete out[r.id];
+      });
+    }
     out = cleanTimes(rows, out);
     return gymAt ? moveGym(rows, out, gymAt) : out;
   }
+  /* The clock as the schedule counts it: 00:30 is 24:30, the tail of last night's day. */
+  function clockKey(hhmm) { return hhmm < '05:00' ? (+hhmm.slice(0, 2) + 24) + hhmm.slice(2) : hhmm; }
 
   /* ---------- missed days ---------- */
   /* Calendar plan: Mon to Fri = Day 1 to 5, Sat = bonus, Sun = off. 0 means off. */
@@ -331,7 +346,7 @@
 
   return {
     planDayFor: planDayFor, mondayOf: mondayOf, dayStatus: dayStatus, weekView: weekView,
-    GYM_CHAIN: GYM_CHAIN, toMin: toMin, toHHMM: toHHMM, spanMin: spanMin, rangeText: rangeText, withTimes: withTimes, cleanTimes: cleanTimes, moveGym: moveGym, setWake: setWake,
+    GYM_CHAIN: GYM_CHAIN, WAKE_CHAIN: WAKE_CHAIN, clockKey: clockKey, toMin: toMin, toHHMM: toHHMM, spanMin: spanMin, rangeText: rangeText, withTimes: withTimes, cleanTimes: cleanTimes, moveGym: moveGym, setWake: setWake,
     fmt: fmt, parse: parse, addDays: addDays, diffDays: diffDays, weekday: weekday, trainingWeek: trainingWeek,
     dayDef: dayDef, totalSets: totalSets, doneSetCount: doneSetCount, isComplete: isComplete, sortSessions: sortSessions,
     nextInOrder: nextInOrder, todayWorkout: todayWorkout, dayType: dayType,
